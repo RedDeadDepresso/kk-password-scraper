@@ -1,0 +1,67 @@
+name: Deploy passwords to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/**"
+      - .github/workflows/pages.yml
+  # Pushes made with GITHUB_TOKEN don't trigger other workflows,
+  # so deploy explicitly after the scrape workflow finishes.
+  workflow_run:
+    workflows: ["Scrape passwords"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch by default; pin explicitly
+          # so we always deploy the branch the scrape workflow just updated.
+          ref: main
+
+      - name: Merge data/*.json into one file
+        run: |
+          mkdir -p _site
+          if ls data/*.json >/dev/null 2>&1; then
+            # -s = slurp all files into one array, add = concatenate the arrays,
+            # -c = compact output. Files are merged in alphabetical order.
+            jq -s -c 'add // []' data/*.json > _site/passwords.json
+          else
+            echo '[]' > _site/passwords.json
+          fi
+          echo "Merged $(jq 'length' _site/passwords.json) entries"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
