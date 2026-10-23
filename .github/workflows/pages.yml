@@ -35,17 +35,19 @@ jobs:
           # so we always deploy the branch the scrape workflow just updated.
           ref: main
 
-      - name: Merge data/*.json into one file
+      - name: Build kk_password_index.json ({"filename":["password"]})
         run: |
           mkdir -p _site
           if ls data/*.json >/dev/null 2>&1; then
-            # -s = slurp all files into one array, add = concatenate the arrays,
-            # -c = compact output. Files are merged in alphabetical order.
-            jq -s -c 'add // []' data/*.json > _site/passwords.json
+            # -s = slurp all files into one array, add = concatenate the arrays.
+            # Each filename maps to a list of distinct passwords, in source order
+            # (the data files are newest-first). Entries without a password are dropped.
+            # -c = compact output (no indentation).
+            jq -s -c '(add // []) | map(select(.password != "")) | reduce .[] as $e ({}; if any(.[$e.filename][]?; . == $e.password) then . else .[$e.filename] += [$e.password] end)' data/*.json > _site/kk_password_index.json
           else
-            echo '[]' > _site/passwords.json
+            echo '{}' > _site/kk_password_index.json
           fi
-          echo "Merged $(jq 'length' _site/passwords.json) entries"
+          echo "Generated $(jq 'length' _site/kk_password_index.json) entries"
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
