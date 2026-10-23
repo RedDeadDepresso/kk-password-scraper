@@ -10,8 +10,23 @@ import (
 const dataDir = "data"
 
 func main() {
-	if err := scrapers.Juedge(dataDir); err != nil {
-		fmt.Fprintf(os.Stderr, "juedge scraper failed: %v\n", err)
+	jobs := []struct {
+		name string
+		run  func(string) error
+	}{
+		{"juedge", scrapers.Juedge},
+		{"rurri00", scrapers.Rurri00},
+	}
+
+	failed := false
+	for _, j := range jobs {
+		fmt.Printf("=== %s ===\n", j.name)
+		if err := j.run(dataDir); err != nil {
+			fmt.Fprintf(os.Stderr, "%s scraper failed: %v\n", j.name, err)
+			failed = true
+		}
+	}
+	if failed {
 		os.Exit(1)
 	}
 }
