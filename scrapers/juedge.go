@@ -28,6 +28,7 @@ const (
 
 // Output format of data/juedge.json
 type JuedgeEntry struct {
+	ID       string `json:"id"` // patreon post id
 	Title    string `json:"title"`
 	Filename string `json:"filename"`
 	Password string `json:"password"`
@@ -42,6 +43,7 @@ type pawchivePost struct {
 }
 
 type candidate struct {
+	ID      string
 	Title   string
 	MegaID  string
 	MegaKey string
@@ -115,15 +117,15 @@ func Juedge(dataDir string) error {
 		return err
 	}
 
-	// Stop marker: title of the first saved post (only if it has a password).
-	stopTitle := ""
-	if len(existing) > 0 && existing[0].Password != "" {
-		stopTitle = normTitle(existing[0].Title)
-		fmt.Printf("Will stop at already-saved post: %s\n", existing[0].Title)
+	// Stop marker: id of the first saved post (only if it has a password).
+	stopID := ""
+	if len(existing) > 0 && existing[0].ID != "" && existing[0].Password != "" {
+		stopID = existing[0].ID
+		fmt.Printf("Will stop at already-saved post: %s (%s)\n", existing[0].Title, stopID)
 	}
 
 	// 1. Pawchive posts (newest first) with their mega links.
-	candidates, err := fetchPawchive(client, stopTitle)
+	candidates, err := fetchPawchive(client, stopID)
 	if err != nil {
 		return err
 	}
@@ -132,10 +134,10 @@ func Juedge(dataDir string) error {
 		return nil
 	}
 
-	// 2. Patreon passwords (post title -> caption of first media).
+	// 2. Patreon passwords (post id -> caption of first media).
 	needed := make(map[string]bool, len(candidates))
 	for _, c := range candidates {
-		needed[normTitle(c.Title)] = true
+		needed[c.ID] = true
 	}
 	passwords, err := fetchPatreonPasswords(client, needed)
 	if err != nil {
@@ -145,7 +147,7 @@ func Juedge(dataDir string) error {
 	// 3. Resolve mega filenames only for posts that have a password.
 	newEntries := make([]JuedgeEntry, 0, len(candidates))
 	for _, c := range candidates {
-		pw := passwords[normTitle(c.Title)]
+		pw := passwords[c.ID]
 		if pw == "" {
 			fmt.Printf("Skipping (no password): %s\n", c.Title)
 			continue
@@ -155,7 +157,7 @@ func Juedge(dataDir string) error {
 			fmt.Printf("Skipping (mega lookup failed: %v): %s\n", err, c.Title)
 			continue
 		}
-		newEntries = append(newEntries, JuedgeEntry{Title: c.Title, Filename: filename, Password: pw})
+		newEntries = append(newEntries, JuedgeEntry{ID: c.ID, Title: c.Title, Filename: filename, Password: pw})
 		fmt.Printf("Added: %s -> %s\n", c.Title, filename)
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -205,17 +207,33 @@ func saveEntries(path string, entries []JuedgeEntry) error {
 
 // ---------- Helpers ----------
 
-// normTitle collapses whitespace so titles match across pawchive and patreon.
+// normTitle collapses whitespace so titles compare reliably.
 func normTitle(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
 func getBody(client *http.Client, u string) ([]byte, error) {
+	return getBodyWithHeaders(client, u, nil)
+}
+
+// getPatreon fetches a patreon API URL with browser-like headers.
+func getPatreon(client *http.Client, u string) ([]byte, error) {
+	return getBodyWithHeaders(client, u, map[string]string{
+		"Accept":          "application/json",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Referer":         "https://www.patreon.com/",
+	})
+}
+
+func getBodyWithHeaders(client *http.Client, u string, headers map[string]string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -237,7 +255,7 @@ func getBody(client *http.Client, u string) ([]byte, error) {
 
 // ---------- Pawchive ----------
 
-func fetchPawchive(client *http.Client, stopTitle string) ([]candidate, error) {
+func fetchPawchive(client *http.Client, stopID string) ([]candidate, error) {
 	var out []candidate
 	for offset := 0; ; offset += pawchivePageSize {
 		body, err := getBody(client, fmt.Sprintf("%s?o=%d", pawchiveURL, offset))
@@ -254,7 +272,7 @@ func fetchPawchive(client *http.Client, stopTitle string) ([]candidate, error) {
 		}
 
 		for _, p := range posts {
-			if stopTitle != "" && normTitle(p.Title) == stopTitle {
+			if stopID != "" && p.ID == stopID {
 				fmt.Printf("Pawchive: hit saved post, stopping (%d new candidates).\n", len(out))
 				return out, nil
 			}
@@ -263,7 +281,7 @@ func fetchPawchive(client *http.Client, stopTitle string) ([]candidate, error) {
 				fmt.Printf("Skipping (no mega file link): %s\n", p.Title)
 				continue
 			}
-			out = append(out, candidate{Title: p.Title, MegaID: m[1], MegaKey: m[2]})
+			out = append(out, candidate{ID: p.ID, Title: p.Title, MegaID: m[1], MegaKey: m[2]})
 		}
 		fmt.Printf("Pawchive: offset %d done (%d candidates so far)\n", offset, len(out))
 		time.Sleep(500 * time.Millisecond)
@@ -410,15 +428,15 @@ func postPassword(post postData, mediaMap map[string]mediaAttributes) string {
 	return strings.TrimSpace(pw)
 }
 
-// fetchPatreonPasswords pages through patreon posts until every needed title
-// has been seen (or pagination ends). Returns normalized title -> password.
+// fetchPatreonPasswords pages through patreon posts until every needed post id
+// has been seen (or pagination ends). Returns post id -> password.
 func fetchPatreonPasswords(client *http.Client, needed map[string]bool) (map[string]string, error) {
 	passwords := make(map[string]string)
 	seen := make(map[string]bool)
 	q := patreonQuery()
 
 	for page := 1; ; page++ {
-		body, err := getBody(client, patreonPostsURL+"?"+q.Encode())
+		body, err := getPatreon(client, patreonPostsURL+"?"+q.Encode())
 		if err != nil {
 			return nil, fmt.Errorf("patreon page %d: %w", page, err)
 		}
@@ -435,7 +453,7 @@ func fetchPatreonPasswords(client *http.Client, needed map[string]bool) (map[str
 		}
 
 		for _, post := range result.Data {
-			key := normTitle(post.Attributes.Title)
+			key := post.ID
 			if seen[key] {
 				continue
 			}

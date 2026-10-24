@@ -20,7 +20,7 @@ const (
 	// Patreon campaign id (the filter[campaign_id] value seen in the browser's
 	// network tab on the creator page). Leave empty to try auto-detecting it
 	// from the creator page, which Patreon's bot protection may block.
-	rurriCampaignID = ""
+	rurriCampaignID = "11455340"
 
 	// Optional: the full https://www.patreon.com/api/posts?... request URL that
 	// the browser makes when you open https://www.patreon.com/cw/Rurri00Koikatsu/posts
@@ -83,8 +83,8 @@ func Rurri00(dataDir string) error {
 	}
 	stopFirst := ""
 	if len(existing) > 0 {
-		stopFirst = normTitle(existing[0].Title)
-		fmt.Printf("Will stop at already-saved post: %s\n", existing[0].Title)
+		stopFirst = existing[0].ID
+		fmt.Printf("Will stop at already-saved post: %s (%s)\n", existing[0].Title, stopFirst)
 	}
 
 	var q url.Values
@@ -144,7 +144,7 @@ func fetchRurriEntries(client *http.Client, q url.Values, stopFirst string) ([]r
 
 	var out []rurriEntry
 	for page := 1; ; page++ {
-		body, err := getBody(client, patreonPostsURL+"?"+q.Encode())
+		body, err := getPatreon(client, patreonPostsURL+"?"+q.Encode())
 		if err != nil {
 			return nil, fmt.Errorf("patreon page %d: %w", page, err)
 		}
@@ -161,12 +161,11 @@ func fetchRurriEntries(client *http.Client, q url.Values, stopFirst string) ([]r
 		}
 
 		for _, post := range result.Data {
-			title := normTitle(post.Attributes.Title)
-			if title == stopSystem {
+			if normTitle(post.Attributes.Title) == stopSystem {
 				fmt.Printf("Hit password-system post, stopping (%d new entries).\n", len(out))
 				return out, nil
 			}
-			if stopFirst != "" && title == stopFirst {
+			if stopFirst != "" && post.ID == stopFirst {
 				fmt.Printf("Hit saved post, stopping (%d new entries).\n", len(out))
 				return out, nil
 			}
@@ -193,7 +192,7 @@ func fetchRurriEntries(client *http.Client, q url.Values, stopFirst string) ([]r
 				if f == "" {
 					continue
 				}
-				out = append(out, rurriEntry{Title: post.Attributes.Title, Filename: f, Password: password})
+				out = append(out, rurriEntry{ID: post.ID, Title: post.Attributes.Title, Filename: f, Password: password})
 			}
 		}
 		fmt.Printf("Patreon: page %d done (%d posts, %d entries so far)\n", page, len(result.Data), len(out))
