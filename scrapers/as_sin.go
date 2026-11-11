@@ -109,10 +109,7 @@ func AsSin(dataDir string) error {
 		}
 		var name string
 		if c.IsFolder {
-			name, err = megaFolderName(client, c.MegaID, c.MegaKey)
-			if err == nil {
-				name += "E.zip" // folder name + E.zip, e.g. 哈尼娅(青春注脚)E.zip
-			}
+			name, err = megaFolderFilename(client, c.MegaID, c.MegaKey)
 		} else {
 			name, err = megaFilename(client, c.MegaID, c.MegaKey)
 		}
@@ -327,44 +324,42 @@ func fetchAsSinPasswords(client *http.Client, campaignID string, needed map[stri
 
 // ---------- Mega folder ----------
 
-// megaFolderName returns the name of the root node of a public mega folder.
-func megaFolderName(client *http.Client, folderID, keyB64 string) (string, error) {
-	folderKey, err := base64.RawURLEncoding.DecodeString(keyB64)
-	if err != nil || len(folderKey) != 16 {
-		return "", fmt.Errorf("invalid mega folder key")
-	}
-	block, err := aes.NewCipher(folderKey)
-	if err != nil {
-		return "", err
-	}
-
-	root, err := megaFolderRoot(client, folderID)
-	if err != nil {
-		return "", err
-	}
-
+// decryptNodeName decrypts the name of a node of a public mega folder using
+// the folder key (all node keys in a folder link are encrypted with it).
+func decryptNodeName(folderBlock cipher.Block, n megaNode) (string, error) {
 	// k looks like "<handle>:<base64 key>[/<handle>:<key>...]"
-	k := strings.SplitN(root.K, "/", 2)[0]
+	k := strings.SplitN(n.K, "/", 2)[0]
 	if i := strings.LastIndex(k, ":"); i >= 0 {
 		k = k[i+1:]
 	}
 	encKey, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(k, "="))
 	if err != nil || len(encKey) == 0 || len(encKey)%aes.BlockSize != 0 {
-		return "", fmt.Errorf("invalid folder node key")
+		return "", fmt.Errorf("invalid node key")
 	}
 	nodeKey := make([]byte, len(encKey))
 	for i := 0; i < len(encKey); i += aes.BlockSize { // AES-ECB
-		block.Decrypt(nodeKey[i:i+aes.BlockSize], encKey[i:i+aes.BlockSize])
+		folderBlock.Decrypt(nodeKey[i:i+aes.BlockSize], encKey[i:i+aes.BlockSize])
 	}
-	if len(nodeKey) != 16 {
-		return "", fmt.Errorf("unexpected folder node key length %d", len(nodeKey))
+	// Files have a 32 byte key (AES key = first half XOR second half),
+	// folders a 16 byte key.
+	var aesKey []byte
+	switch len(nodeKey) {
+	case 32:
+		aesKey = make([]byte, 16)
+		for i := range aesKey {
+			aesKey[i] = nodeKey[i] ^ nodeKey[i+16]
+		}
+	case 16:
+		aesKey = nodeKey
+	default:
+		return "", fmt.Errorf("unexpected node key length %d", len(nodeKey))
 	}
 
-	enc, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(root.A, "="))
+	enc, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(n.A, "="))
 	if err != nil || len(enc) == 0 || len(enc)%aes.BlockSize != 0 {
 		return "", fmt.Errorf("invalid encrypted attributes")
 	}
-	nb, err := aes.NewCipher(nodeKey)
+	nb, err := aes.NewCipher(aesKey)
 	if err != nil {
 		return "", err
 	}
@@ -383,6 +378,53 @@ func megaFolderName(client *http.Client, folderID, keyB64 string) (string, error
 	return attr.Name, nil
 }
 
+// megaFolderFilename returns the real name of the file inside a public mega
+// folder. Folders hold a single file; if several, a .zip wins. If the folder
+// has no files, it falls back to <folder name>E.zip.
+func megaFolderFilename(client *http.Client, folderID, keyB64 string) (string, error) {
+	folderKey, err := base64.RawURLEncoding.DecodeString(keyB64)
+	if err != nil || len(folderKey) != 16 {
+		return "", fmt.Errorf("invalid mega folder key")
+	}
+	block, err := aes.NewCipher(folderKey)
+	if err != nil {
+		return "", err
+	}
+	nodes, err := megaFolderNodes(client, folderID)
+	if err != nil {
+		return "", err
+	}
+
+	var first, zipName string
+	var rootName string
+	for _, n := range nodes {
+		name, err := decryptNodeName(block, n)
+		if err != nil {
+			continue
+		}
+		switch {
+		case n.T == 0:
+			if first == "" {
+				first = name
+			}
+			if zipName == "" && strings.HasSuffix(strings.ToLower(name), ".zip") {
+				zipName = name
+			}
+		case n.T == 1 && rootName == "":
+			rootName = name
+		}
+	}
+	switch {
+	case zipName != "":
+		return zipName, nil
+	case first != "":
+		return first, nil
+	case rootName != "":
+		return rootName + "E.zip", nil
+	}
+	return "", fmt.Errorf("could not read any names from mega folder")
+}
+
 type megaNode struct {
 	H string `json:"h"`
 	P string `json:"p"`
@@ -391,7 +433,7 @@ type megaNode struct {
 	K string `json:"k"`
 }
 
-func megaFolderRoot(client *http.Client, folderID string) (megaNode, error) {
+func megaFolderNodes(client *http.Client, folderID string) ([]megaNode, error) {
 	payload := `[{"a":"f","c":1,"r":1}]`
 	endpoint := megaAPIURL + "?id=1&n=" + url.QueryEscape(folderID)
 	var lastErr error
@@ -401,7 +443,7 @@ func megaFolderRoot(client *http.Client, folderID string) (megaNode, error) {
 		}
 		req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(payload))
 		if err != nil {
-			return megaNode{}, err
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", userAgent)
@@ -423,36 +465,26 @@ func megaFolderRoot(client *http.Client, folderID string) (megaNode, error) {
 				lastErr = fmt.Errorf("mega error %d", code)
 				continue
 			}
-			return megaNode{}, fmt.Errorf("mega error %d", code)
+			return nil, fmt.Errorf("mega error %d", code)
 		}
 		var arr []json.RawMessage
 		if err := json.Unmarshal(body, &arr); err != nil || len(arr) == 0 {
-			return megaNode{}, fmt.Errorf("unexpected mega response")
+			return nil, fmt.Errorf("unexpected mega response")
 		}
 		if json.Unmarshal(arr[0], &code) == nil {
 			if code == -3 || code == -4 {
 				lastErr = fmt.Errorf("mega error %d", code)
 				continue
 			}
-			return megaNode{}, fmt.Errorf("mega error %d (-9 = link removed)", code)
+			return nil, fmt.Errorf("mega error %d (-9 = link removed)", code)
 		}
 		var res struct {
 			F []megaNode `json:"f"`
 		}
 		if err := json.Unmarshal(arr[0], &res); err != nil || len(res.F) == 0 {
-			return megaNode{}, fmt.Errorf("mega folder has no nodes")
+			return nil, fmt.Errorf("mega folder has no nodes")
 		}
-		for _, n := range res.F {
-			if n.T == 1 && n.H == folderID {
-				return n, nil
-			}
-		}
-		for _, n := range res.F {
-			if n.T == 1 {
-				return n, nil
-			}
-		}
-		return megaNode{}, fmt.Errorf("mega folder root not found")
+		return res.F, nil
 	}
-	return megaNode{}, lastErr
+	return nil, lastErr
 }
