@@ -110,6 +110,9 @@ func AsSin(dataDir string) error {
 		var name string
 		if c.IsFolder {
 			name, err = megaFolderName(client, c.MegaID, c.MegaKey)
+			if err == nil {
+				name += "E.zip" // folder name + E.zip, e.g. 哈尼娅(青春注脚)E.zip
+			}
 		} else {
 			name, err = megaFilename(client, c.MegaID, c.MegaKey)
 		}
