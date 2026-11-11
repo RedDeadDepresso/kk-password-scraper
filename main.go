@@ -56,6 +56,7 @@ func main() {
 	}{
 		{"juedge", scrapers.Juedge},
 		{"rurri00", scrapers.Rurri00},
+		{"as_sin", scrapers.AsSin},
 	}
 
 	failed := false
