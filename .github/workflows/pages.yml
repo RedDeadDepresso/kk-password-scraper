@@ -43,7 +43,7 @@ jobs:
             # Each filename maps to a list of distinct passwords, in source order
             # (the data files are newest-first). Entries without a password are dropped.
             # -c = compact output (no indentation).
-            jq -s -c '(add // []) | map(select(.password != "")) | reduce .[] as $e ({}; if any(.[$e.filename][]?; . == $e.password) then . else .[$e.filename] += [$e.password] end)' data/*.json > _site/indices/password.json
+            jq -s -c '(add // []) | map(select((.password // "") != "")) | reduce .[] as $e ({}; if any(.[$e.filename][]?; . == $e.password) then . else .[$e.filename] += [$e.password] end)' data/*.json > _site/indices/password.json
           else
             echo '{}' > _site/indices/password.json
           fi
