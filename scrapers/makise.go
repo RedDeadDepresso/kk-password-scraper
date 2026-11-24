@@ -24,7 +24,7 @@ type makisePost struct {
 //
 //	<p><a href="https://mega.nz/file/..."></a></p><p></p><p>password:</p><p>PASSWORD</p>
 var (
-	makisePasswordRe = regexp.MustCompile(`(?is)password\s*[:：]\s*(?:</p>\s*<p[^>]*>)?(.*?)</p>`)
+	makisePasswordRe = regexp.MustCompile(`(?is)password\s*[:：]?\s*(?:</p>\s*<p[^>]*>)?(.*?)</p>`)
 	htmlTagRe        = regexp.MustCompile(`<[^>]*>`)
 )
 
