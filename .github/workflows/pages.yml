@@ -49,6 +49,19 @@ jobs:
           fi
           echo "Generated $(jq 'length' _site/indices/password.json) entries"
 
+      - name: Build indices/posts.json ({"postId":[{"f":"filename","p":"password"}]})
+        run: |
+          # Used by the KKAFIO browser extension on Pawchive. Keyed by Patreon post id
+          # (the data-id of a Pawchive post card). A post can hold several files, so each
+          # id maps to a list of distinct {f: filename, p: password} pairs, in source order.
+          # Entries without a password are dropped. indices/password.json is left as is.
+          if ls data/*.json >/dev/null 2>&1; then
+            jq -s -c '(add // []) | map(select((.password // "") != "" and (.id // "") != "")) | reduce .[] as $e ({}; if any(.[$e.id][]?; .f == $e.filename and .p == $e.password) then . else .[$e.id] += [{f: $e.filename, p: $e.password}] end)' data/*.json > _site/indices/posts.json
+          else
+            echo '{}' > _site/indices/posts.json
+          fi
+          echo "Generated $(jq 'length' _site/indices/posts.json) post entries"
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
